@@ -1,0 +1,10 @@
+# Binaries
+/lazypipe
+*.exe
+*.out
+dist/
+
+# OS & Editor files
+.DS_Store
+.idea/
+.vscode/
