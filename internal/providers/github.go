@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 )
@@ -20,18 +21,22 @@ type ghRunJSON struct {
 	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
-// FetchLiveGitHubRuns attempts to load recent GitHub Actions runs using the local `gh` CLI if inside a repo.
-// Falls back cleanly to SampleRuns() if no runs exist or if offline.
-func FetchLiveOrSampleRuns() ([]PipelineRun, string) {
-	cmd := exec.Command("gh", "run", "list", "--limit", "8", "--json", "databaseId,displayTitle,workflowName,headBranch,headSha,status,conclusion,createdAt,updatedAt")
+// FetchGitHubRuns queries live GitHub Actions workflow runs via `gh run list`.
+func FetchGitHubRuns() ([]PipelineRun, error) {
+	cmd := exec.Command("gh", "run", "list", "--limit", "8", "--json", "databaseId,displayTitle,workflowName,headBranch,headSha,status,conclusion,createdAt,UpdatedAt")
+	// Note: gh uses updatedAt (camelCase)
+	cmd = exec.Command("gh", "run", "list", "--limit", "8", "--json", "databaseId,displayTitle,workflowName,headBranch,headSha,status,conclusion,createdAt,updatedAt")
 	out, err := cmd.Output()
 	if err != nil {
-		return SampleRuns(), "Demo Mode (GitHub Actions + Azure DevOps)"
+		return nil, err
 	}
 
 	var ghRuns []ghRunJSON
-	if err := json.Unmarshal(out, &ghRuns); err != nil || len(ghRuns) == 0 {
-		return SampleRuns(), "Demo Mode (GitHub Actions + Azure DevOps)"
+	if err := json.Unmarshal(out, &ghRuns); err != nil {
+		return nil, err
+	}
+	if len(ghRuns) == 0 {
+		return nil, fmt.Errorf("no GitHub Actions runs returned")
 	}
 
 	runs := make([]PipelineRun, 0, len(ghRuns))
@@ -46,7 +51,7 @@ func FetchLiveOrSampleRuns() ([]PipelineRun, string) {
 			ID:        fmt.Sprintf("gh-%d", r.DatabaseID),
 			Name:      r.WorkflowName,
 			Provider:  ProviderGitHubActions,
-			Repo:      "local-git-repo",
+			Repo:      "github-repo",
 			Branch:    r.HeadBranch,
 			CommitSHA: sha,
 			CommitMsg: strings.TrimSpace(r.DisplayTitle),
@@ -64,7 +69,41 @@ func FetchLiveOrSampleRuns() ([]PipelineRun, string) {
 			},
 		})
 	}
-	return runs, "Live GitHub CLI Mode"
+	return runs, nil
+}
+
+// RetriggerGitHubRun triggers `gh run rerun <run-id>` for a GitHub Actions workflow run.
+func RetriggerGitHubRun(runID string) error {
+	rawID := strings.TrimPrefix(runID, "gh-")
+	cmd := exec.Command("gh", "run", "rerun", rawID)
+	return cmd.Run()
+}
+
+// FetchLiveOrSampleRuns aggregates live runs from GitHub Actions (`gh`) and Azure DevOps (`az pipelines`),
+// falling back cleanly to SampleRuns() when neither provider returns live runs.
+func FetchLiveOrSampleRuns() ([]PipelineRun, string) {
+	var combined []PipelineRun
+	var activeSources []string
+
+	if ghRuns, err := FetchGitHubRuns(); err == nil && len(ghRuns) > 0 {
+		combined = append(combined, ghRuns...)
+		activeSources = append(activeSources, "GHA Live")
+	}
+
+	if adoRuns, err := FetchAzureDevOpsRuns(); err == nil && len(adoRuns) > 0 {
+		combined = append(combined, adoRuns...)
+		activeSources = append(activeSources, "ADO Live")
+	}
+
+	if len(combined) == 0 {
+		return SampleRuns(), "Demo Mode (GitHub Actions + Azure DevOps)"
+	}
+
+	sort.Slice(combined, func(i, j int) bool {
+		return combined[i].StartedAt.After(combined[j].StartedAt)
+	})
+
+	return combined, strings.Join(activeSources, " + ")
 }
 
 func mapGHStatus(status, conclusion string) RunStatus {

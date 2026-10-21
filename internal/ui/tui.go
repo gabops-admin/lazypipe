@@ -124,14 +124,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			if len(visible) > 0 && m.cursor < len(visible) {
 				target := visible[m.cursor]
+				var triggerErr error
+				if strings.HasPrefix(target.ID, "gh-") {
+					triggerErr = providers.RetriggerGitHubRun(target.ID)
+				} else if strings.HasPrefix(target.ID, "ado-") && !strings.HasSuffix(target.ID, "2049") && !strings.HasSuffix(target.ID, "2050") {
+					triggerErr = providers.RetriggerAzureDevOpsRun(target.Name, target.Branch)
+				}
 				for i := range m.runs {
 					if m.runs[i].ID == target.ID {
 						m.runs[i].Status = providers.StatusRunning
 						m.runs[i].Duration = "1s (re-triggered)"
 						m.runs[i].StartedAt = time.Now()
-						m.runs[i].Logs = append(m.runs[i].Logs,
-							fmt.Sprintf("[%s] INFO  Re-triggered workflow %s (%s) from Lazypipe TUI...",
-								time.Now().Format("15:04:05"), target.ID, target.Branch))
+						logMsg := fmt.Sprintf("[%s] INFO  Re-triggered workflow %s (%s) from Lazypipe TUI...",
+							time.Now().Format("15:04:05"), target.ID, target.Branch)
+						if triggerErr != nil {
+							logMsg = fmt.Sprintf("[%s] WARN  CLI re-trigger notice: %v (simulated in UI)",
+								time.Now().Format("15:04:05"), triggerErr)
+						}
+						m.runs[i].Logs = append(m.runs[i].Logs, logMsg)
 						break
 					}
 				}
